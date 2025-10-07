@@ -1,10 +1,10 @@
 # Advanced Image Converter
 
-A small GUI tool to apply stylized image effects (pencil sketch, cartoonify, pastel, and enhancement) to images and live camera feed using OpenCV and Tkinter. The interface includes sliders for brightness, contrast, saturation, sharpness, hue shift, and noise reduction. You can process single images, a batch of images from a directory, or a connected camera.
+A small GUI tool to apply stylized image effects (pencil sketch and cartoonify) to images and live camera feed using OpenCV and Tkinter. The interface includes sliders for brightness, contrast, saturation, sharpness, hue shift, and noise reduction. You can process single images, a batch of images from a directory, or a connected camera.
 
 ## Features
 
-- Pencil Sketch, Cartoonify, Pastel, and Enhance Original effects
+- Pencil Sketch and Cartoonify effects
 - Live camera preview with real-time effect application
 - Save processed frames or images
 - Batch process a directory of images
@@ -81,14 +81,6 @@ This project implements several image stylization and enhancement techniques usi
 	- Performs edge detection on a blurred grayscale image using adaptive thresholding to extract strong edges.
 	- Uses edge-preserving filters and bilateral filtering on a downscaled color image to create flattened color regions.
 	- Adjusts hue, saturation, and brightness in HSV space for color tuning; then combines color regions with the edge mask.
-
-- Pastel
-	- Converts to HSV and reduces saturation while boosting brightness slightly to create a pastel palette.
-	- Applies a light Gaussian blur for softness and optional sharpening for detail preservation.
-
-- Enhance Original
-	- Adjusts hue/saturation/brightness in HSV and applies contrast/brightness scaling to improve color and exposure.
-	- Optional sharpening and light median blur for noise reduction are supported.
 
 - Performance and UI considerations
 	- Downscaling for processing: Large images are downscaled to a max dimension (default 800 px) for faster processing, then resized back to original dimensions. This balances performance and quality.

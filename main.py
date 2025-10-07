@@ -182,100 +182,6 @@ def cartoonify_image(image, brightness=1.0, contrast=1.0, saturation=1.0, sharpn
     
     return cartoon_final
 
-# Pastel color effect with fast processing
-def pastel_image(image, brightness=1.0, contrast=1.0, saturation=1.0, sharpness=1.0, hue=0.0, noise_reduction=0.0):
-    # Downscale for faster processing
-    small = downscale_for_processing(image)
-
-    # Convert to float for smoother adjustments
-    img_f = small.astype(np.float32) / 255.0
-
-    # Slight hue shift in HSV
-    hsv = cv2.cvtColor((img_f * 255).astype(np.uint8), cv2.COLOR_BGR2HSV).astype(np.float32)
-    hue_shift = int(hue * 180)
-    hsv[:, :, 0] = (hsv[:, :, 0] + hue_shift) % 180
-
-    # Reduce saturation gently to get pastel look, but allow user control
-    hsv[:, :, 1] = hsv[:, :, 1] * (0.6 + 0.4 * saturation)
-
-    # Boost brightness slightly for pastel tones
-    hsv[:, :, 2] = np.clip(hsv[:, :, 2] * (1.0 + 0.15 * (brightness - 1.0)), 0, 255)
-
-    pastel = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
-
-    # Edge-preserving smoothing to create soft color regions while preserving edges
-    pastel = cv2.edgePreservingFilter(pastel, flags=1, sigma_s=60, sigma_r=0.4)
-
-    # Gentle bilateral filtering for painterly softness; scale with noise_reduction
-    d = 5
-    sigma_color = 75 + noise_reduction * 50
-    sigma_space = 75
-    pastel = cv2.bilateralFilter(pastel, d=d, sigmaColor=sigma_color, sigmaSpace=sigma_space)
-
-    # Apply mild gamma correction / tone mapping using contrast param
-    gamma = 1.0 / max(0.01, contrast)
-    pastel_f = pastel.astype(np.float32) / 255.0
-    pastel_f = np.clip(pastel_f ** gamma, 0.0, 1.0)
-    pastel = (pastel_f * 255).astype(np.uint8)
-
-    # Optional sharpen to retain some detail when sharpness > 1.0
-    if sharpness > 1.0:
-        sharpened_kernel = _SHARP_KERNEL * (sharpness - 1.0) * 0.6 + np.eye(3, dtype=np.float32)
-        try:
-            pastel = cv2.filter2D(pastel, -1, sharpened_kernel)
-        except Exception:
-            # fallback: simple unsharp mask
-            blurred = cv2.GaussianBlur(pastel, (3, 3), 0)
-            pastel = cv2.addWeighted(pastel, 1.0 + 0.3 * (sharpness - 1.0), blurred, -0.3 * (sharpness - 1.0), 0)
-
-    # Slight overall brightness/contrast tweak
-    beta = int((brightness - 1.0) * 15)
-    alpha = 1.0 + (contrast - 1.0) * 0.25
-    pastel = cv2.convertScaleAbs(pastel, alpha=alpha, beta=beta)
-
-    # Edge-aware blend: keep a subtle amount of original edges to avoid overly smeared result
-    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 80, 160)
-    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
-    edges_colored = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-    mask = (edges_colored > 0).astype(np.uint8)
-    # Blend: where mask==1 use a slightly sharpened original, else use pastel
-    original_resized = small
-    blended = pastel.copy()
-    blended[mask[:, :, 0] == 1] = cv2.addWeighted(original_resized, 0.6, pastel, 0.4, 0)[mask[:, :, 0] == 1]
-
-    # Resize back to original dimensions if downscaled
-    if small.shape[:2] != image.shape[:2]:
-        blended = cv2.resize(blended, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
-
-    return blended
-
-# Enhance original photo with quality and color (fast processing)
-def enhance_original(image, brightness=1.0, contrast=1.0, saturation=1.0, sharpness=1.0, hue=0.0, noise_reduction=0.0):
-    # Downscale for faster processing
-    small = downscale_for_processing(image)
-    
-    hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
-    hue_shift = int(hue * 180)
-    hsv[:, :, 0] = (hsv[:, :, 0] + hue_shift) % 180
-    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * saturation, 0, 255)
-    hsv[:, :, 2] = np.clip(hsv[:, :, 2] * brightness, 0, 255)
-    enhanced = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-    enhanced = cv2.convertScaleAbs(enhanced, alpha=contrast, beta=(brightness - 1.0) * 10)
-    
-    if sharpness > 1.0:
-        sharpened_kernel = _SHARP_KERNEL * sharpness
-        enhanced = cv2.filter2D(enhanced, -1, sharpened_kernel)
-    
-    if noise_reduction > 0:
-        enhanced = cv2.medianBlur(enhanced, 3)
-    
-    # Resize back to original dimensions if downscaled
-    if small.shape[:2] != image.shape[:2]:
-        enhanced = cv2.resize(enhanced, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
-    
-    return enhanced
-
 # Global variables for batch processing
 batch_images = []
 batch_index = 0
@@ -374,10 +280,9 @@ def save_all_batch_images():
                 processed = pencil_sketch(original_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
             elif current_effect == "Cartoonify":
                 processed = cartoonify_image(original_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
-            elif current_effect == "Pastel":
-                processed = pastel_image(original_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
-            else:  # Enhance Original
-                processed = enhance_original(original_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
+            else:
+                # Default to pencil sketch if unknown effect
+                processed = pencil_sketch(original_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
             
             # Generate output filename
             original_name = os.path.splitext(os.path.basename(image_path))[0]
@@ -564,10 +469,9 @@ def update_frame():
         output = pencil_sketch(current_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
     elif selected_effect == "Cartoonify":
         output = cartoonify_image(current_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
-    elif selected_effect == "Pastel":
-        output = pastel_image(current_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
     else:
-        output = enhance_original(current_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
+        # Default to pencil sketch for unknown effects
+        output = pencil_sketch(current_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
 
     output = resize_image(output)
     display_result(output)
@@ -586,10 +490,9 @@ def save_frame_from_camera():
             output = pencil_sketch(frozen_frame, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
         elif current_effect == "Cartoonify":
             output = cartoonify_image(frozen_frame, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
-        elif current_effect == "Pastel":
-            output = pastel_image(frozen_frame, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
         else:
-            output = enhance_original(frozen_frame, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
+            # Default to pencil sketch for unknown effects
+            output = pencil_sketch(frozen_frame, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
 
         output = resize_image(output)
 
@@ -665,10 +568,9 @@ def apply_effect():
         output = pencil_sketch(current_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
     elif current_effect == "Cartoonify":
         output = cartoonify_image(current_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
-    elif current_effect == "Pastel":
-        output = pastel_image(current_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
-    else:  # Enhance Original
-        output = enhance_original(current_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
+    else:
+        # Default to pencil sketch for unknown effects
+        output = pencil_sketch(current_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
     
     output = resize_image(output)
     display_result(output)
@@ -721,7 +623,7 @@ def main():
     effect_var = tk.StringVar(value="Pencil Sketch")
     effect_label = Label(control_frame, text="Select Effect:", font=("Helvetica", 12), bg='#E0F7FA', fg='#212121')
     effect_label.grid(row=0, column=0, padx=15, pady=10)
-    effect_dropdown = ttk.Combobox(control_frame, textvariable=effect_var, values=["Pencil Sketch", "Cartoonify", "Pastel", "Enhance Original"], state="readonly", font=("Helvetica", 10), width=20)
+    effect_dropdown = ttk.Combobox(control_frame, textvariable=effect_var, values=["Pencil Sketch", "Cartoonify"], state="readonly", font=("Helvetica", 10), width=20)
     effect_dropdown.grid(row=0, column=1, padx=15, pady=10)
 
     # Method dropdown
