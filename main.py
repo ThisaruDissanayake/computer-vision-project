@@ -300,7 +300,10 @@ def open_file(effect, batch=False):
                 
                 # Load and display first image
                 load_batch_image(0)
-                messagebox.showinfo("Batch Mode", f"Loaded {len(batch_images)} images. Use Next/Previous buttons to navigate.")
+                # Force show navigation buttons immediately
+                root.after(50, show_batch_navigation)
+                # Show info after loading
+                root.after(200, lambda: messagebox.showinfo("Batch Mode", f"Loaded {len(batch_images)} images. Use ◀ ▶ arrow buttons to navigate between images."))
             else:
                 messagebox.showwarning("No Images", "No image files found in the selected directory.")
     else:
@@ -315,13 +318,14 @@ def open_file(effect, batch=False):
 
 def load_batch_image(index):
     """Load and display a specific image from the batch"""
-    global current_image, batch_images, batch_index
+    global current_image, batch_images, batch_index, current_effect
     if 0 <= index < len(batch_images):
         batch_index = index
         file_path = batch_images[index]
         image = cv2.imread(file_path)
         if image is not None:
             current_image = image.copy()
+            # Apply effect immediately - the UI should be ready by now
             apply_effect()
             # Update title to show current image info
             filename = os.path.basename(file_path)
@@ -333,6 +337,8 @@ def next_batch_image():
     if batch_mode and batch_images:
         next_index = (batch_index + 1) % len(batch_images)  # Loop back to first
         load_batch_image(next_index)
+        # Update navigation buttons to reflect new index
+        root.after(50, show_batch_navigation)
 
 def previous_batch_image():
     """Navigate to previous image in batch"""
@@ -340,6 +346,8 @@ def previous_batch_image():
     if batch_mode and batch_images:
         prev_index = (batch_index - 1) % len(batch_images)  # Loop to last
         load_batch_image(prev_index)
+        # Update navigation buttons to reflect new index
+        root.after(50, show_batch_navigation)
 
 def save_all_batch_images():
     """Save all images in current batch with applied effects"""
@@ -392,22 +400,71 @@ def save_all_batch_images():
     messagebox.showinfo("Batch Save Complete", f"Successfully saved {saved_count}/{len(batch_images)} images to:\n{output_dir}")
 
 def exit_batch_mode():
-    """Exit batch processing mode"""
-    global batch_mode, batch_images, batch_index, nav_frame
+    """Exit batch processing mode and return to single image mode"""
+    global batch_mode, batch_images, batch_index, image_array, result_image, batch_nav_frame
+    
+    # Reset batch mode variables
     batch_mode = False
     batch_images = []
     batch_index = 0
-    root.title("Advanced Image Converter")
-    # Clear the display
+    
+    # Clear images
+    image_array = None
+    result_image = None
+    
+    # Hide and clear batch navigation frame
+    batch_nav_frame.grid_remove()
+    
+    # Destroy all navigation buttons to completely remove them
+    for widget in batch_nav_frame.winfo_children():
+        widget.destroy()
+    
+    # Clear result display
     result_label.config(image='', text="Show Results")
-    # Hide navigation buttons
-    if nav_frame and nav_frame.winfo_exists():
-        nav_frame.place_forget()
-    # Remove any existing buttons
-    if 'image_save_button' in globals() and image_save_button and image_save_button.winfo_exists():
-        image_save_button.destroy()
-    if 'close_button' in globals() and close_button and close_button.winfo_exists():
-        close_button.destroy()
+    
+    print("Debug: Exited batch mode - all navigation buttons removed")
+    messagebox.showinfo("Info", "Exited batch processing mode. You can now upload single images.")
+
+def show_batch_navigation():
+    """Show navigation buttons for batch mode"""
+    global batch_mode, batch_images, batch_index, batch_nav_frame
+    
+    if batch_mode and len(batch_images) >= 1:
+        print(f"Debug: Force showing navigation for batch mode - {len(batch_images)} images")
+        
+        # Show the batch navigation frame
+        batch_nav_frame.grid()
+        
+        # Clear any existing navigation buttons
+        for widget in batch_nav_frame.winfo_children():
+            widget.destroy()
+        
+        # Create centered navigation container
+        nav_container = tk.Frame(batch_nav_frame, bg='#B2EBF2', bd=2, relief='ridge')
+        nav_container.pack(expand=True)
+        
+        # Create left arrow button
+        left_arrow = tk.Button(nav_container, text="◀ Previous", command=previous_batch_image, bg='#2196F3', fg='white', font=("Helvetica", 10, "bold"), padx=10, pady=5, bd=1, relief='raised')
+        left_arrow.pack(side=tk.LEFT, padx=5, pady=5)
+        
+        # Image counter in the middle
+        image_counter = tk.Label(nav_container, text=f"Image {batch_index + 1} of {len(batch_images)}", bg='#B2EBF2', font=("Helvetica", 12, "bold"), fg='#212121')
+        image_counter.pack(side=tk.LEFT, padx=15, pady=5)
+        
+        # Create right arrow button
+        right_arrow = tk.Button(nav_container, text="Next ▶", command=next_batch_image, bg='#2196F3', fg='white', font=("Helvetica", 10, "bold"), padx=10, pady=5, bd=1, relief='raised')
+        right_arrow.pack(side=tk.LEFT, padx=5, pady=5)
+        
+        # Add Exit Batch Mode button
+        exit_batch_btn = tk.Button(nav_container, text="Exit Batch", command=exit_batch_mode, bg='#FF5722', fg='white', font=("Helvetica", 9, "bold"), width=8, height=1, bd=1, relief='raised')
+        exit_batch_btn.pack(side=tk.LEFT, padx=8, pady=5)
+        
+        # Add Save All button
+        save_all_btn = tk.Button(nav_container, text="Save All", command=save_all_batch_images, bg='#4CAF50', fg='white', font=("Helvetica", 9, "bold"), width=8, height=1, bd=1, relief='raised')
+        save_all_btn.pack(side=tk.LEFT, padx=8, pady=5)
+    else:
+        # Hide batch navigation when not in batch mode
+        batch_nav_frame.grid_remove()
 
 # Display result in the result area
 def display_result(output):
@@ -459,38 +516,9 @@ def display_result(output):
         close_button = tk.Button(button_frame, text="Close Current Process", command=close_current_process, bg='#f44336', fg='white', font=("Helvetica", 10), activebackground='#da190b', bd=1, relief=tk.RAISED, padx=10, pady=5)
         close_button.grid(row=0, column=0, padx=10, pady=5, sticky='w')
     
-    # Show arrow navigation buttons if in batch mode
-    if batch_mode and len(batch_images) > 1:
-        # Create navigation frame if it doesn't exist
-        if 'nav_frame' not in globals() or not nav_frame.winfo_exists():
-            nav_frame = tk.Frame(root, bg='#B2EBF2', bd=2, relief='ridge')
-        
-        # Clear any existing navigation buttons
-        for widget in nav_frame.winfo_children():
-            widget.destroy()
-        
-        # Create left arrow button
-        left_arrow = tk.Button(nav_frame, text="◀", command=previous_batch_image, bg='#2196F3', fg='white', font=("Arial", 16, "bold"), width=3, height=1, bd=1, relief='raised')
-        left_arrow.pack(side=tk.LEFT, padx=8, pady=5)
-        
-        # Image counter in the middle
-        image_counter = tk.Label(nav_frame, text=f"{batch_index + 1} / {len(batch_images)}", bg='#B2EBF2', font=("Helvetica", 11, "bold"), fg='#212121')
-        image_counter.pack(side=tk.LEFT, padx=15, pady=5)
-        
-        # Create right arrow button
-        right_arrow = tk.Button(nav_frame, text="▶", command=next_batch_image, bg='#2196F3', fg='white', font=("Arial", 16, "bold"), width=3, height=1, bd=1, relief='raised')
-        right_arrow.pack(side=tk.LEFT, padx=8, pady=5)
-        
-        # Add Exit Batch Mode button
-        exit_batch_btn = tk.Button(nav_frame, text="Exit Batch", command=exit_batch_mode, bg='#FF5722', fg='white', font=("Helvetica", 9, "bold"), width=8, height=1, bd=1, relief='raised')
-        exit_batch_btn.pack(side=tk.LEFT, padx=8, pady=5)
-        
-        # Add Save All button
-        save_all_btn = tk.Button(nav_frame, text="Save All", command=save_all_batch_images, bg='#4CAF50', fg='white', font=("Helvetica", 9, "bold"), width=8, height=1, bd=1, relief='raised')
-        save_all_btn.pack(side=tk.LEFT, padx=8, pady=5)
-        
-        # Position navigation frame under the result area
-        nav_frame.place(relx=0.5, rely=0.82, anchor='center')
+    # Show/update navigation if in batch mode
+    if batch_mode and len(batch_images) >= 1:
+        show_batch_navigation()
     else:
         # Hide navigation frame if not in batch mode
         if 'nav_frame' in globals() and nav_frame.winfo_exists():
@@ -770,6 +798,14 @@ def main():
     # History button
     history_button = ttk.Button(button_frame, text="History", command=show_history, style="Rounded.TButton")
     history_button.grid(row=0, column=2, padx=10, pady=5, sticky='e')
+    
+    # Add navigation buttons row for batch mode (initially hidden)
+    batch_nav_frame = tk.Frame(button_frame, bg='#E0F7FA')
+    batch_nav_frame.grid(row=1, column=0, columnspan=3, pady=10, sticky='ew')
+    batch_nav_frame.grid_remove()  # Initially hidden
+    
+    # Make batch navigation frame globally accessible
+    globals()['batch_nav_frame'] = batch_nav_frame
 
     # Note: Save and Close buttons are now created dynamically in display_result() function
     # This ensures they appear for both camera and uploaded image modes
