@@ -15,10 +15,20 @@ _SHARP_KERNEL = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]], dtype=np.flo
 # ID for debounced apply_effect scheduling
 _apply_after_id = None
 
-# Resize image or frame to fit the 600x400 result area while maintaining aspect ratio
+# Resize image or frame to fit the result area dynamically while maintaining aspect ratio
 def resize_image(img):
+    global result_label
     height, width = img.shape[:2]
-    target_width, target_height = 600, 400
+    
+    # Get result label dimensions dynamically
+    try:
+        result_label.update_idletasks()
+        target_width = max(400, result_label.winfo_width() - 20)  # Leave some padding
+        target_height = max(300, result_label.winfo_height() - 20)
+    except:
+        # Fallback to default size if there's an issue
+        target_width, target_height = 600, 400
+    
     aspect_ratio = width / height
     
     if width > height:
@@ -87,43 +97,90 @@ def pencil_sketch(image, brightness=1.0, contrast=1.0, saturation=1.0, sharpness
     
     return sketch
 
-# Enhanced cartoonify effect with fast processing
+# Enhanced cartoonify effect - sharp cartoon look like real animated cartoons
 def cartoonify_image(image, brightness=1.0, contrast=1.0, saturation=1.0, sharpness=1.0, hue=0.0, noise_reduction=0.0):
     # Downscale for faster processing
     small = downscale_for_processing(image)
     
-    # Fast edge detection
-    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-    gray = cv2.medianBlur(gray, 7)
-    edges = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 9, 9)
+    # Step 1: Light smoothing only if noise reduction is requested
+    if noise_reduction > 0.2:
+        smooth = cv2.bilateralFilter(small, d=5, sigmaColor=50, sigmaSpace=50)
+    else:
+        smooth = small.copy()
     
-    # Fast color smoothing (replace expensive KMeans)
-    color = cv2.edgePreservingFilter(small, flags=1, sigma_s=60, sigma_r=0.4)
-    color = cv2.bilateralFilter(color, d=9, sigmaColor=150 + noise_reduction * 50, sigmaSpace=150)
+    # Step 2: K-means clustering for clean color regions (like real cartoons)
+    # Reshape image to be a list of pixels
+    data = smooth.reshape((-1, 3))
+    data = np.float32(data)
     
-    # Apply adjustments
-    hsv = cv2.cvtColor(color, cv2.COLOR_BGR2HSV)
+    # Define criteria and apply K-means
+    k = max(6, int(16 - noise_reduction * 8))  # 6-16 color clusters
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+    _, labels, centers = cv2.kmeans(data, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+    
+    # Convert back to uint8 and reshape to original image shape
+    centers = np.uint8(centers)
+    quantized_data = centers[labels.flatten()]
+    quantized = quantized_data.reshape(smooth.shape)
+    
+    # Step 3: Apply color adjustments in HSV for vibrant cartoon colors
+    hsv = cv2.cvtColor(quantized, cv2.COLOR_BGR2HSV).astype(np.float32)
+    
+    # Apply hue shift
     hue_shift = int(hue * 180)
     hsv[:, :, 0] = (hsv[:, :, 0] + hue_shift) % 180
-    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * saturation * 1.2, 0, 255)
+    
+    # Boost saturation for cartoon vibrancy
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * saturation * 1.5, 0, 255)
+    
+    # Adjust brightness
     hsv[:, :, 2] = np.clip(hsv[:, :, 2] * brightness * 1.1, 0, 255)
-    color = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
     
-    # Sharpen if needed
-    if sharpness > 1.0:
-        sharpened_kernel = _SHARP_KERNEL * sharpness
-        color = cv2.filter2D(color, -1, sharpened_kernel)
+    cartoon_colors = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
     
-    # Combine with edges
+    # Step 4: Create sharp, clean edges
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    
+    # Create sharp edges without too much blur
+    gray_blur = cv2.medianBlur(gray, 3)  # Minimal blur
+    
+    # Use Canny edge detection for cleaner lines
+    edges = cv2.Canny(gray_blur, 50, 150)
+    
+    # Dilate edges to make them more prominent but not too thick
+    kernel = np.ones((2, 2), np.uint8)
+    edges = cv2.dilate(edges, kernel, iterations=1)
+    
+    # Convert edges to 3-channel
     edges_colored = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-    cartoon = cv2.bitwise_and(color, edges_colored)
-    cartoon = cv2.convertScaleAbs(cartoon, alpha=contrast * 1.3, beta=(brightness - 1.0) * 10)
+    
+    # Step 5: Combine colors with edges
+    # Invert edges so we can use them as a mask (white=keep color, black=draw edge)
+    edges_mask = edges == 255
+    
+    cartoon_result = cartoon_colors.copy()
+    # Draw black lines where edges are detected
+    cartoon_result[edges_mask] = [0, 0, 0]
+    
+    # Step 6: Enhance contrast and brightness
+    cartoon_result = cv2.convertScaleAbs(cartoon_result, alpha=contrast * 1.2, beta=(brightness - 1.0) * 15)
+    
+    # Step 7: Optional sharpening for crisp details
+    if sharpness > 1.0:
+        # Unsharp mask for crisp cartoon details
+        gaussian = cv2.GaussianBlur(cartoon_result, (0, 0), 2.0)
+        cartoon_result = cv2.addWeighted(cartoon_result, 1.0 + (sharpness - 1.0) * 0.5, gaussian, -(sharpness - 1.0) * 0.5, 0)
+    
+    # Step 8: Final saturation boost for cartoon pop
+    hsv_final = cv2.cvtColor(cartoon_result, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv_final[:, :, 1] = np.clip(hsv_final[:, :, 1] * 1.1, 0, 255)
+    cartoon_final = cv2.cvtColor(hsv_final.astype(np.uint8), cv2.COLOR_HSV2BGR)
     
     # Resize back to original dimensions if downscaled
     if small.shape[:2] != image.shape[:2]:
-        cartoon = cv2.resize(cartoon, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
+        cartoon_final = cv2.resize(cartoon_final, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
     
-    return cartoon
+    return cartoon_final
 
 # Pastel color effect with fast processing
 def pastel_image(image, brightness=1.0, contrast=1.0, saturation=1.0, sharpness=1.0, hue=0.0, noise_reduction=0.0):
@@ -219,22 +276,36 @@ def enhance_original(image, brightness=1.0, contrast=1.0, saturation=1.0, sharpn
     
     return enhanced
 
+# Global variables for batch processing
+batch_images = []
+batch_index = 0
+batch_mode = False
+
 # Handle file selection and effect application
 def open_file(effect, batch=False):
-    global current_image, current_effect, cap, is_camera_open
+    global current_image, current_effect, cap, is_camera_open, batch_images, batch_index, batch_mode
     if is_camera_open:
         close_camera()
     if batch:
         directory = filedialog.askdirectory(title="Select Directory")
         if directory:
-            images = [f for f in os.listdir(directory) if f.endswith(('.png', '.jpg', '.jpeg'))]
-            for img_file in images:
-                file_path = os.path.join(directory, img_file)
-                image = cv2.imread(file_path)
-                current_image = image.copy()
+            # Get all image files from directory
+            image_files = [f for f in os.listdir(directory) if f.endswith(('.png', '.jpg', '.jpeg'))]
+            if image_files:
+                # Store batch information
+                batch_images = [os.path.join(directory, f) for f in image_files]
+                batch_index = 0
+                batch_mode = True
                 current_effect = effect.get()
-                apply_effect()
+                
+                # Load and display first image
+                load_batch_image(0)
+                messagebox.showinfo("Batch Mode", f"Loaded {len(batch_images)} images. Use Next/Previous buttons to navigate.")
+            else:
+                messagebox.showwarning("No Images", "No image files found in the selected directory.")
     else:
+        # Single file mode
+        batch_mode = False
         file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.png *.jpg *.jpeg")])
         if file_path:
             image = cv2.imread(file_path)
@@ -242,9 +313,105 @@ def open_file(effect, batch=False):
             current_effect = effect.get()
             apply_effect()
 
+def load_batch_image(index):
+    """Load and display a specific image from the batch"""
+    global current_image, batch_images, batch_index
+    if 0 <= index < len(batch_images):
+        batch_index = index
+        file_path = batch_images[index]
+        image = cv2.imread(file_path)
+        if image is not None:
+            current_image = image.copy()
+            apply_effect()
+            # Update title to show current image info
+            filename = os.path.basename(file_path)
+            root.title(f"Advanced Image Converter - Batch Mode ({index + 1}/{len(batch_images)}) - {filename}")
+
+def next_batch_image():
+    """Navigate to next image in batch"""
+    global batch_index, batch_images
+    if batch_mode and batch_images:
+        next_index = (batch_index + 1) % len(batch_images)  # Loop back to first
+        load_batch_image(next_index)
+
+def previous_batch_image():
+    """Navigate to previous image in batch"""
+    global batch_index, batch_images
+    if batch_mode and batch_images:
+        prev_index = (batch_index - 1) % len(batch_images)  # Loop to last
+        load_batch_image(prev_index)
+
+def save_all_batch_images():
+    """Save all images in current batch with applied effects"""
+    global batch_images, current_effect
+    if not batch_images:
+        messagebox.showwarning("No Images", "No batch images to save.")
+        return
+    
+    # Ask user to select output directory
+    output_dir = filedialog.askdirectory(title="Select Output Directory for Batch Save")
+    if not output_dir:
+        return
+    
+    saved_count = 0
+    for i, image_path in enumerate(batch_images):
+        try:
+            # Load original image
+            original_image = cv2.imread(image_path)
+            if original_image is None:
+                continue
+            
+            # Apply current effect
+            if current_effect == "Pencil Sketch":
+                processed = pencil_sketch(original_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
+            elif current_effect == "Cartoonify":
+                processed = cartoonify_image(original_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
+            elif current_effect == "Pastel":
+                processed = pastel_image(original_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
+            else:  # Enhance Original
+                processed = enhance_original(original_image, brightness_val.get(), contrast_val.get(), saturation_val.get(), sharpness_val.get(), hue_val.get(), noise_reduction_val.get())
+            
+            # Generate output filename
+            original_name = os.path.splitext(os.path.basename(image_path))[0]
+            output_filename = f"{original_name}_{current_effect.replace(' ', '_').lower()}.jpg"
+            output_path = os.path.join(output_dir, output_filename)
+            
+            # Convert and save
+            if len(processed.shape) == 2:  # Grayscale
+                processed_rgb = cv2.cvtColor(processed, cv2.COLOR_GRAY2RGB)
+            else:
+                processed_rgb = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB)
+            
+            Image.fromarray(processed_rgb).save(output_path)
+            saved_count += 1
+            
+        except Exception as e:
+            print(f"Error processing {image_path}: {e}")
+            continue
+    
+    messagebox.showinfo("Batch Save Complete", f"Successfully saved {saved_count}/{len(batch_images)} images to:\n{output_dir}")
+
+def exit_batch_mode():
+    """Exit batch processing mode"""
+    global batch_mode, batch_images, batch_index, nav_frame
+    batch_mode = False
+    batch_images = []
+    batch_index = 0
+    root.title("Advanced Image Converter")
+    # Clear the display
+    result_label.config(image='', text="Show Results")
+    # Hide navigation buttons
+    if nav_frame and nav_frame.winfo_exists():
+        nav_frame.place_forget()
+    # Remove any existing buttons
+    if 'image_save_button' in globals() and image_save_button and image_save_button.winfo_exists():
+        image_save_button.destroy()
+    if 'close_button' in globals() and close_button and close_button.winfo_exists():
+        close_button.destroy()
+
 # Display result in the result area
 def display_result(output):
-    global save_button
+    global image_save_button, close_button
     if len(output.shape) == 2:
         output = cv2.cvtColor(output, cv2.COLOR_GRAY2RGB)
     else:
@@ -255,17 +422,79 @@ def display_result(output):
     result_label.config(image=output_tk)
     result_label.image = output_tk
 
-    if 'save_button' in globals() and save_button.winfo_exists():
-        save_button.pack_forget()
+    # Remove existing buttons if they exist
+    if 'image_save_button' in globals() and image_save_button and image_save_button.winfo_exists():
+        image_save_button.destroy()
     
     def save_image():
         save_path = filedialog.asksaveasfilename(defaultextension=".jpg", filetypes=[("JPEG", "*.jpg"), ("PNG", "*.png")])
         if save_path:
             output_pil.save(save_path)
             messagebox.showinfo("Saved", f"Image saved to {save_path}")
+            # Add to history for uploaded images too
+            if not is_camera_open:
+                add_to_history(output, current_effect if current_effect else "Unknown", save_path)
 
-    save_button = tk.Button(root, text="Save Image", command=save_image, bg='#4CAF50', fg='white', font=("Helvetica", 10), activebackground='#45a049', bd=1, relief=tk.RAISED, padx=10, pady=5)
-    save_button.pack(pady=10, side=tk.LEFT)
+    def close_current_process():
+        global current_image, current_effect
+        if batch_mode:
+            exit_batch_mode()
+        elif is_camera_open:
+            close_camera()
+        else:
+            # For uploaded images, clear current image and reset display
+            current_image = None
+            current_effect = None
+            result_label.config(image='', text="Show Results")
+            # Remove buttons
+            if image_save_button and image_save_button.winfo_exists():
+                image_save_button.destroy()
+
+    # Create both buttons for all modes (camera and uploaded images) in the button frame
+    image_save_button = tk.Button(button_frame, text="Save Image", command=save_image, bg='#4CAF50', fg='white', font=("Helvetica", 10), activebackground='#45a049', bd=1, relief=tk.RAISED, padx=10, pady=5)
+    image_save_button.grid(row=0, column=1, padx=10, pady=5)
+    
+    # Show close button for both camera and uploaded images in the button frame
+    if not ('close_button' in globals() and close_button and close_button.winfo_exists()):
+        close_button = tk.Button(button_frame, text="Close Current Process", command=close_current_process, bg='#f44336', fg='white', font=("Helvetica", 10), activebackground='#da190b', bd=1, relief=tk.RAISED, padx=10, pady=5)
+        close_button.grid(row=0, column=0, padx=10, pady=5, sticky='w')
+    
+    # Show arrow navigation buttons if in batch mode
+    if batch_mode and len(batch_images) > 1:
+        # Create navigation frame if it doesn't exist
+        if 'nav_frame' not in globals() or not nav_frame.winfo_exists():
+            nav_frame = tk.Frame(root, bg='#B2EBF2', bd=2, relief='ridge')
+        
+        # Clear any existing navigation buttons
+        for widget in nav_frame.winfo_children():
+            widget.destroy()
+        
+        # Create left arrow button
+        left_arrow = tk.Button(nav_frame, text="◀", command=previous_batch_image, bg='#2196F3', fg='white', font=("Arial", 16, "bold"), width=3, height=1, bd=1, relief='raised')
+        left_arrow.pack(side=tk.LEFT, padx=8, pady=5)
+        
+        # Image counter in the middle
+        image_counter = tk.Label(nav_frame, text=f"{batch_index + 1} / {len(batch_images)}", bg='#B2EBF2', font=("Helvetica", 11, "bold"), fg='#212121')
+        image_counter.pack(side=tk.LEFT, padx=15, pady=5)
+        
+        # Create right arrow button
+        right_arrow = tk.Button(nav_frame, text="▶", command=next_batch_image, bg='#2196F3', fg='white', font=("Arial", 16, "bold"), width=3, height=1, bd=1, relief='raised')
+        right_arrow.pack(side=tk.LEFT, padx=8, pady=5)
+        
+        # Add Exit Batch Mode button
+        exit_batch_btn = tk.Button(nav_frame, text="Exit Batch", command=exit_batch_mode, bg='#FF5722', fg='white', font=("Helvetica", 9, "bold"), width=8, height=1, bd=1, relief='raised')
+        exit_batch_btn.pack(side=tk.LEFT, padx=8, pady=5)
+        
+        # Add Save All button
+        save_all_btn = tk.Button(nav_frame, text="Save All", command=save_all_batch_images, bg='#4CAF50', fg='white', font=("Helvetica", 9, "bold"), width=8, height=1, bd=1, relief='raised')
+        save_all_btn.pack(side=tk.LEFT, padx=8, pady=5)
+        
+        # Position navigation frame under the result area
+        nav_frame.place(relx=0.5, rely=0.82, anchor='center')
+    else:
+        # Hide navigation frame if not in batch mode
+        if 'nav_frame' in globals() and nav_frame.winfo_exists():
+            nav_frame.place_forget()
 
 # Handle live camera feed with chosen effect
 def open_camera(effect):
@@ -344,16 +573,17 @@ def save_frame_from_camera():
             add_to_history(output, current_effect, save_path)
 
 def close_camera():
-    global cap, is_camera_open, current_image
+    global cap, is_camera_open, current_image, image_save_button, close_button
     if is_camera_open and cap is not None:
         cap.release()
         is_camera_open = False
         current_image = None
         result_label.config(image='', text="Show Results")
-        if 'save_button' in globals() and save_button.winfo_exists():
-            save_button.place_forget()
-        if 'close_button' in globals() and close_button.winfo_exists():
-            close_button.place_forget()
+        # Remove all buttons when closing camera
+        if 'image_save_button' in globals() and image_save_button and image_save_button.winfo_exists():
+            image_save_button.destroy()
+        if 'close_button' in globals() and close_button and close_button.winfo_exists():
+            close_button.destroy()
 
 def add_to_history(output, effect, file_path):
     global history_items
@@ -417,34 +647,47 @@ def apply_effect():
 
 # Main GUI setup
 def main():
-    global root, result_label, save_button, close_button, brightness_val, contrast_val, saturation_val, quality_var, sharpness_val, hue_val, noise_reduction_val, history_items
+    global root, result_label, image_save_button, close_button, nav_frame, button_frame, brightness_val, contrast_val, saturation_val, quality_var, sharpness_val, hue_val, noise_reduction_val, history_items
     
     # Create and configure the main window
     root = tk.Tk()
     root.title("Advanced Image Converter")
     root.configure(bg='#F5F5F5')
+    
+    # Make window responsive
     root.geometry("1200x800")
+    root.minsize(1000, 700)  # Minimum size
+    root.maxsize(1920, 1080)  # Maximum size
+    root.resizable(True, True)  # Allow resizing
+    
+    # Configure grid weights for responsiveness
+    root.grid_rowconfigure(0, weight=1)
+    root.grid_columnconfigure(0, weight=1)
 
     # Set up a custom style for rounded corners
     style = ttk.Style()
     style.configure("Custom.TFrame", background='#E0F7FA', borderwidth=2, relief='flat')
     style.configure("Rounded.TButton", font=("Helvetica", 10), padding=6, relief='flat')
 
-    # Canvas for background
-    canvas = tk.Canvas(root, width=1200, height=800, bg='#E0F7FA', highlightthickness=0)
-    canvas.pack()
-    canvas.create_rectangle(10, 10, 1190, 790, fill='#B2EBF2', outline='', width=0)
+    # Create main responsive frame instead of fixed canvas
+    main_frame = tk.Frame(root, bg='#E0F7FA')
+    main_frame.grid(row=0, column=0, sticky='nsew', padx=10, pady=10)
+    
+    # Configure main frame grid weights
+    main_frame.grid_rowconfigure(0, weight=0)  # Title
+    main_frame.grid_rowconfigure(1, weight=0)  # Controls
+    main_frame.grid_rowconfigure(2, weight=0)  # Sliders
+    main_frame.grid_rowconfigure(3, weight=1)  # Result area
+    main_frame.grid_rowconfigure(4, weight=0)  # Buttons
+    main_frame.grid_columnconfigure(0, weight=1)
 
     # Title
-    title_label = Label(root, text="Advanced Image Converter", font=("Helvetica", 20, "bold"), bg='#B2EBF2', fg='#212121', pady=15, padx=20)
-    title_label.place(relx=0.5, rely=0.05, anchor='center')
+    title_label = Label(main_frame, text="Advanced Image Converter", font=("Helvetica", 20, "bold"), bg='#E0F7FA', fg='#212121', pady=15, padx=20)
+    title_label.grid(row=0, column=0, pady=10, sticky='ew')
 
     # Control frame with rounded corners
-    control_frame = ttk.Frame(root, style="Custom.TFrame")
-    control_frame.place(relx=0.5, rely=0.17, anchor='center')
-    canvas.create_rectangle(control_frame.winfo_x(), control_frame.winfo_y(), 
-                           control_frame.winfo_x() + 500, control_frame.winfo_y() + 50, 
-                           outline='#B2EBF2', width=2, dash=(4, 4))
+    control_frame = ttk.Frame(main_frame, style="Custom.TFrame")
+    control_frame.grid(row=1, column=0, pady=10, padx=20, sticky='ew')
 
     # Effect dropdown
     effect_var = tk.StringVar(value="Pencil Sketch")
@@ -465,9 +708,12 @@ def main():
     run_button.grid(row=0, column=4, padx=15, pady=10)
 
     # Enhancement sliders in 3x2 grid
-    slider_frame = ttk.Frame(root, style="Custom.TFrame")
-    slider_frame.place(relx=0.5, rely=0.3, anchor='center')
-    canvas.create_rectangle(250, 150, 250 + 1000, 150 + 150, outline='#B2EBF2', width=2, dash=(4, 4))
+    slider_frame = ttk.Frame(main_frame, style="Custom.TFrame")
+    slider_frame.grid(row=2, column=0, pady=15, padx=20, sticky='ew')
+    
+    # Configure slider frame grid weights
+    for i in range(4):
+        slider_frame.grid_columnconfigure(i, weight=1)
 
 
     brightness_val = tk.DoubleVar(value=1.0)
@@ -495,40 +741,43 @@ def main():
     Label(slider_frame, text="Noise Reduction", font=("Helvetica", 12), bg='#E0F7FA', fg='#212121').grid(row=2, column=2, padx=15, pady=5)
     Scale(slider_frame, from_=0.0, to=1.0, resolution=0.1, variable=noise_reduction_val, orient=tk.HORIZONTAL, length=200, bg='#B2EBF2', troughcolor='#E0F7FA', highlightthickness=0, command=lambda x: schedule_apply_effect()).grid(row=2, column=3, padx=15, pady=5)
 
-    # Quality display with rounded corners
-    quality_frame = ttk.Frame(root, style="Custom.TFrame")
-    quality_frame.place(relx=0.5, rely=0.75, anchor='center')
-    canvas.create_rectangle(quality_frame.winfo_x(), quality_frame.winfo_y(), 
-                           quality_frame.winfo_x() + 200, quality_frame.winfo_y() + 50, 
-                           outline='#B2EBF2', width=2, dash=(4, 4))
-    quality_var = tk.IntVar(value=90)
-    quality_label = Label(quality_frame, text="Original Quality: 90%", font=("Helvetica", 12), bg='#E0F7FA', fg='#212121')
-    quality_label.grid(row=0, column=0, padx=15, pady=10)
+    # Create a container for result area and quality info
+    result_container = tk.Frame(main_frame, bg='#E0F7FA')
+    result_container.grid(row=3, column=0, pady=15, padx=20, sticky='nsew')
+    result_container.grid_rowconfigure(0, weight=1)
+    result_container.grid_rowconfigure(1, weight=0)
+    result_container.grid_columnconfigure(0, weight=1)
 
-    # Result area with rounded corners
-    result_frame = ttk.Frame(root, style="Custom.TFrame")
-    result_frame.place(relx=0.5, rely=0.68, anchor='center')
-    canvas.create_rectangle(result_frame.winfo_x(), result_frame.winfo_y(), 
-                           result_frame.winfo_x() + 600, result_frame.winfo_y() + 400, 
-                           outline='#B2EBF2', width=2, dash=(4, 4))
-    canvas_result = tk.Canvas(result_frame, width=600, height=400, bg='#B2EBF2', highlightthickness=0)
-    canvas_result.pack()
-    canvas_result.create_rectangle(2, 2, 598, 398, outline='#212121', dash=(4, 4))
-    result_label = Label(canvas_result, text="Show Results", font=("Helvetica", 14), bg='#B2EBF2', fg='#212121')
-    result_label.place(relx=0.5, rely=0.5, anchor='center')
+    # Result area with responsive sizing
+    result_frame = tk.Frame(result_container, bg='#B2EBF2', bd=2, relief='ridge')
+    result_frame.grid(row=0, column=0, sticky='nsew', pady=(0, 10))
+    result_frame.grid_rowconfigure(0, weight=1)
+    result_frame.grid_columnconfigure(0, weight=1)
+    
+    # Result label that will display images
+    result_label = Label(result_frame, text="Show Results", font=("Helvetica", 14), bg='#B2EBF2', fg='#212121')
+    result_label.grid(row=0, column=0, sticky='nsew', padx=10, pady=10)
 
-    # History button with rounded style
-    history_button = ttk.Button(root, text="History", command=show_history, style="Rounded.TButton")
-    history_button.place(relx=0.8, rely=0.9, anchor='center')
 
-    # UI Buttons in bottom left corner with rounded style
-    save_button = ttk.Button(root, text="Save Frame", command=save_frame_from_camera, style="Rounded.TButton", padding=6)
-    save_button.place(relx=0.1, rely=0.8, anchor='center')
 
-    close_button = ttk.Button(root, text="Close Current Process", command=close_camera, style="Rounded.TButton", padding=6)
-    close_button.place(relx=0.1, rely=0.9, anchor='center')
+    # Button frame for responsive button layout
+    button_frame = tk.Frame(main_frame, bg='#E0F7FA')
+    button_frame.grid(row=4, column=0, pady=10, sticky='ew')
+    button_frame.grid_columnconfigure(0, weight=1)
+    button_frame.grid_columnconfigure(1, weight=1)
+    button_frame.grid_columnconfigure(2, weight=1)
+
+    # History button
+    history_button = ttk.Button(button_frame, text="History", command=show_history, style="Rounded.TButton")
+    history_button.grid(row=0, column=2, padx=10, pady=5, sticky='e')
+
+    # Note: Save and Close buttons are now created dynamically in display_result() function
+    # This ensures they appear for both camera and uploaded image modes
 
     history_items = []
+    image_save_button = None  # Initialize to avoid errors
+    close_button = None  # Initialize to avoid errors
+    nav_frame = None  # Initialize navigation frame
 
     def run_process(effect, method):
         if method.get() == "Camera":
