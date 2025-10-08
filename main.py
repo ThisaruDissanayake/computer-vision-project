@@ -4,29 +4,30 @@ from tkinter import filedialog, messagebox, Label, ttk, Scale, Button, Toplevel
 from PIL import Image, ImageTk
 import numpy as np
 import os
+from app.effects import pencil_sketch, cartoonify_image
 
-# Global variables to store current image, effect, and camera state
+
 current_image = None
 current_effect = None
 cap = None
 is_camera_open = False
+
 _PROCESSING_MAX_DIM = 800
-_SHARP_KERNEL = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]], dtype=np.float32)
-# ID for debounced apply_effect scheduling
+
 _apply_after_id = None
 
-# Resize image or frame to fit the result area dynamically while maintaining aspect ratio
+
 def resize_image(img):
     global result_label
     height, width = img.shape[:2]
     
-    # Get result label dimensions dynamically
+
     try:
         result_label.update_idletasks()
-        target_width = max(400, result_label.winfo_width() - 20)  # Leave some padding
+        target_width = max(400, result_label.winfo_width() - 20) 
         target_height = max(300, result_label.winfo_height() - 20)
     except:
-        # Fallback to default size if there's an issue
+        
         target_width, target_height = 600, 400
     
     aspect_ratio = width / height
@@ -48,7 +49,7 @@ def resize_image(img):
 
 
 def downscale_for_processing(img, max_dim=_PROCESSING_MAX_DIM):
-    """Downscale large images for faster processing, preserving aspect ratio."""
+   
     h, w = img.shape[:2]
     if max(h, w) <= max_dim:
         return img
@@ -57,7 +58,7 @@ def downscale_for_processing(img, max_dim=_PROCESSING_MAX_DIM):
 
 
 def schedule_apply_effect(delay=150):
-    """Debounce apply_effect calls from frequent slider events."""
+   
     global _apply_after_id
     try:
         if _apply_after_id is not None:
@@ -66,123 +67,8 @@ def schedule_apply_effect(delay=150):
         pass
     _apply_after_id = root.after(delay, apply_effect)
 
-# Enhanced pencil sketch effect with fast processing
-def pencil_sketch(image, brightness=1.0, contrast=1.0, saturation=1.0, sharpness=1.0, hue=0.0, noise_reduction=0.0):
-    # Downscale for faster processing
-    small = downscale_for_processing(image)
-    
-    if len(small.shape) == 3:
-        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = small
-    
-    ksize = int(5 + noise_reduction * 4)
-    ksize = max(3, ksize + (1 - ksize % 2))
-    gray = cv2.medianBlur(gray, ksize)
-    gray = cv2.convertScaleAbs(gray, alpha=contrast, beta=(brightness - 1.0) * 100)
-    gray = cv2.equalizeHist(gray)
 
-    # Fast dodge blend
-    inverted = cv2.bitwise_not(gray)
-    blurred = cv2.GaussianBlur(inverted, (21, 21), 0)
-    sketch = cv2.divide(gray, 255 - blurred, scale=256.0)
-    
-    if sharpness > 1.0:
-        sharpened_kernel = _SHARP_KERNEL * sharpness
-        sketch = cv2.filter2D(sketch, -1, sharpened_kernel)
-    
-    # Resize back to original dimensions if downscaled
-    if small.shape[:2] != image.shape[:2]:
-        sketch = cv2.resize(sketch, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
-    
-    return sketch
-
-# Enhanced cartoonify effect - sharp cartoon look like real animated cartoons
-def cartoonify_image(image, brightness=1.0, contrast=1.0, saturation=1.0, sharpness=1.0, hue=0.0, noise_reduction=0.0):
-    # Downscale for faster processing
-    small = downscale_for_processing(image)
-    
-    # Step 1: Light smoothing only if noise reduction is requested
-    if noise_reduction > 0.2:
-        smooth = cv2.bilateralFilter(small, d=5, sigmaColor=50, sigmaSpace=50)
-    else:
-        smooth = small.copy()
-    
-    # Step 2: K-means clustering for clean color regions (like real cartoons)
-    # Reshape image to be a list of pixels
-    data = smooth.reshape((-1, 3))
-    data = np.float32(data)
-    
-    # Define criteria and apply K-means
-    k = max(6, int(16 - noise_reduction * 8))  # 6-16 color clusters
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
-    _, labels, centers = cv2.kmeans(data, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
-    
-    # Convert back to uint8 and reshape to original image shape
-    centers = np.uint8(centers)
-    quantized_data = centers[labels.flatten()]
-    quantized = quantized_data.reshape(smooth.shape)
-    
-    # Step 3: Apply color adjustments in HSV for vibrant cartoon colors
-    hsv = cv2.cvtColor(quantized, cv2.COLOR_BGR2HSV).astype(np.float32)
-    
-    # Apply hue shift
-    hue_shift = int(hue * 180)
-    hsv[:, :, 0] = (hsv[:, :, 0] + hue_shift) % 180
-    
-    # Boost saturation for cartoon vibrancy
-    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * saturation * 1.5, 0, 255)
-    
-    # Adjust brightness
-    hsv[:, :, 2] = np.clip(hsv[:, :, 2] * brightness * 1.1, 0, 255)
-    
-    cartoon_colors = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
-    
-    # Step 4: Create sharp, clean edges
-    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-    
-    # Create sharp edges without too much blur
-    gray_blur = cv2.medianBlur(gray, 3)  # Minimal blur
-    
-    # Use Canny edge detection for cleaner lines
-    edges = cv2.Canny(gray_blur, 50, 150)
-    
-    # Dilate edges to make them more prominent but not too thick
-    kernel = np.ones((2, 2), np.uint8)
-    edges = cv2.dilate(edges, kernel, iterations=1)
-    
-    # Convert edges to 3-channel
-    edges_colored = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-    
-    # Step 5: Combine colors with edges
-    # Invert edges so we can use them as a mask (white=keep color, black=draw edge)
-    edges_mask = edges == 255
-    
-    cartoon_result = cartoon_colors.copy()
-    # Draw black lines where edges are detected
-    cartoon_result[edges_mask] = [0, 0, 0]
-    
-    # Step 6: Enhance contrast and brightness
-    cartoon_result = cv2.convertScaleAbs(cartoon_result, alpha=contrast * 1.2, beta=(brightness - 1.0) * 15)
-    
-    # Step 7: Optional sharpening for crisp details
-    if sharpness > 1.0:
-        # Unsharp mask for crisp cartoon details
-        gaussian = cv2.GaussianBlur(cartoon_result, (0, 0), 2.0)
-        cartoon_result = cv2.addWeighted(cartoon_result, 1.0 + (sharpness - 1.0) * 0.5, gaussian, -(sharpness - 1.0) * 0.5, 0)
-    
-    # Step 8: Final saturation boost for cartoon pop
-    hsv_final = cv2.cvtColor(cartoon_result, cv2.COLOR_BGR2HSV).astype(np.float32)
-    hsv_final[:, :, 1] = np.clip(hsv_final[:, :, 1] * 1.1, 0, 255)
-    cartoon_final = cv2.cvtColor(hsv_final.astype(np.uint8), cv2.COLOR_HSV2BGR)
-    
-    # Resize back to original dimensions if downscaled
-    if small.shape[:2] != image.shape[:2]:
-        cartoon_final = cv2.resize(cartoon_final, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
-    
-    return cartoon_final
-
-# Global variables for batch processing
+#  Batch processing
 batch_images = []
 batch_index = 0
 batch_mode = False
@@ -206,9 +92,7 @@ def open_file(effect, batch=False):
                 
                 # Load and display first image
                 load_batch_image(0)
-                # Force show navigation buttons immediately
                 root.after(50, show_batch_navigation)
-                # Show info after loading
                 root.after(200, lambda: messagebox.showinfo("Batch Mode", f"Loaded {len(batch_images)} images. Use ◀ ▶ arrow buttons to navigate between images."))
             else:
                 messagebox.showwarning("No Images", "No image files found in the selected directory.")
@@ -223,7 +107,7 @@ def open_file(effect, batch=False):
             apply_effect()
 
 def load_batch_image(index):
-    """Load and display a specific image from the batch"""
+    
     global current_image, batch_images, batch_index, current_effect
     if 0 <= index < len(batch_images):
         batch_index = index
@@ -262,7 +146,7 @@ def save_all_batch_images():
         messagebox.showwarning("No Images", "No batch images to save.")
         return
     
-    # Ask user to select output directory
+    
     output_dir = filedialog.askdirectory(title="Select Output Directory for Batch Save")
     if not output_dir:
         return
@@ -393,7 +277,7 @@ def display_result(output):
         if save_path:
             output_pil.save(save_path)
             messagebox.showinfo("Saved", f"Image saved to {save_path}")
-            # Add to history for uploaded images too
+           
             if not is_camera_open:
                 add_to_history(output, current_effect if current_effect else "Unknown", save_path)
 
